@@ -113,6 +113,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=DEFAULT_GITHUB_TEMPLATE_REPO,
         help="Target GitHub owner/repo slug for --push",
     )
+    p_tmpl.add_argument(
+        "-m",
+        "--message",
+        default=None,
+        help="Optional commit message when pushing template updates with --push",
+    )
 
     args = parser.parse_args(argv)
 
@@ -266,11 +272,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             res = pull_from_template_repository(root, args.source)
             print(f"Pulled {res['skills_synced']} universal skills and plan_pipeline package from {res['source']}")
         if args.push:
-            res = publish_template_to_github(root, repo_slug=args.repo)
-            print(
-                f"Published GitHub Template Repository: {res['html_url']} "
-                f"(is_template={res['is_template']}, skills={res['skills_exported']})"
-            )
+            msg = args.message.strip() if isinstance(args.message, str) and args.message.strip() else None
+            res = publish_template_to_github(root, repo_slug=args.repo, commit_message=msg)
+            if res.get("up_to_date"):
+                print(f"Template repository already up to date: {res['html_url']} (skills={res['skills_exported']})")
+            else:
+                print(
+                    f"Published GitHub Template Repository: {res['html_url']} "
+                    f"(is_template={res['is_template']}, skills={res['skills_exported']})"
+                )
         return 0
 
     return 0

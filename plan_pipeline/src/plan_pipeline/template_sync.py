@@ -839,17 +839,138 @@ def _ensure_github_template_repo(
             return json.loads(resp_post.read().decode("utf-8"))
 
 
+def _git_commit_cmd(repo_dir: Path, commit_message: str, env: Dict[str, str]) -> List[str]:
+    """Build a git commit command, falling back to local identity only if git user.name/email are unset."""
+    has_name = subprocess.run(
+        ["git", "config", "user.name"], cwd=str(repo_dir), env=env, capture_output=True, text=True
+    ).returncode == 0
+    has_email = subprocess.run(
+        ["git", "config", "user.email"], cwd=str(repo_dir), env=env, capture_output=True, text=True
+    ).returncode == 0
+    cmd = ["git"]
+    if not has_name:
+        cmd.extend(["-c", "user.name=plan-pipeline"])
+    if not has_email:
+        cmd.extend(["-c", "user.email=plan-pipeline@local"])
+    cmd.extend(["commit", "-m", commit_message])
+    return cmd
+
+
+def _push_export_preserving_history(
+    export_dir: Path,
+    remote_url: str,
+    commit_message: str,
+) -> Dict[str, Any]:
+    """
+    Push `export_dir` to `remote_url` on `main` while preserving commit history when `refs/heads/main` exists.
+    Never mutates `export_dir` and never silently falls back on auth/network/404 or non-`main` branch errors.
+    """
+    export_dir = Path(export_dir).resolve()
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    ls_res = subprocess.run(
+        ["git", "ls-remote", "--heads", remote_url],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    head_lines = [line.strip() for line in ls_res.stdout.splitlines() if line.strip()]
+    has_main = any(line.endswith("\trefs/heads/main") or line.endswith(" refs/heads/main") for line in head_lines)
+    if head_lines and not has_main:
+        raise RuntimeError(f"Remote {remote_url} has existing branches but no 'main' branch: {head_lines}")
+
+    ignore_fn = shutil.ignore_patterns(".git", "__pycache__", "*.pyc", "*.pyo", "._*")
+    repo_dir = Path(tempfile.mkdtemp(prefix="agentic_template_repo_"))
+    try:
+        if has_main:
+            subprocess.run(
+                ["git", "clone", "--branch", "main", "--single-branch", remote_url, str(repo_dir)],
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            for entry in list(repo_dir.iterdir()):
+                if entry.name == ".git":
+                    continue
+                if entry.is_symlink() or not entry.is_dir():
+                    entry.unlink()
+                else:
+                    shutil.rmtree(entry)
+            shutil.copytree(export_dir, repo_dir, dirs_exist_ok=True, ignore=ignore_fn)
+            subprocess.run(["git", "add", "-A"], cwd=str(repo_dir), env=env, check=True, capture_output=True)
+            status_res = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=str(repo_dir),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            if not status_res.stdout.strip():
+                return {"pushed": False, "up_to_date": True}
+            subprocess.run(
+                _git_commit_cmd(repo_dir, commit_message, env),
+                cwd=str(repo_dir),
+                env=env,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "push", "origin", "main"],
+                cwd=str(repo_dir),
+                env=env,
+                check=True,
+                capture_output=True,
+            )
+            return {"pushed": True, "up_to_date": False}
+
+        # Truly empty remote: initialize main in repo_dir and push initial commit
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(repo_dir), env=env, check=True, capture_output=True)
+        shutil.copytree(export_dir, repo_dir, dirs_exist_ok=True, ignore=ignore_fn)
+        subprocess.run(["git", "add", "-A"], cwd=str(repo_dir), env=env, check=True, capture_output=True)
+        subprocess.run(
+            _git_commit_cmd(repo_dir, commit_message, env),
+            cwd=str(repo_dir),
+            env=env,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "remote", "add", "origin", remote_url],
+            cwd=str(repo_dir),
+            env=env,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=str(repo_dir),
+            env=env,
+            check=True,
+            capture_output=True,
+        )
+        return {"pushed": True, "up_to_date": False}
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
 def publish_template_to_github(
     workspace_root: Path,
     repo_slug: str = DEFAULT_GITHUB_TEMPLATE_REPO,
     is_public: bool = True,
     is_template: bool = True,
-    commit_message: str = "feat: publish Universal Agentic Project Template with 5-step plan-pipeline",
+    commit_message: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Export the standalone template repository from `workspace_root`, verify its self-tests pass,
-    create/configure the GitHub repository with `is_template: true`, and push `main`.
+    create/configure the GitHub repository with `is_template: true`, and push `main` preserving history.
     """
+    effective_message = (
+        commit_message.strip()
+        if isinstance(commit_message, str) and commit_message.strip()
+        else "feat: publish Universal Agentic Project Template with 5-step plan-pipeline"
+    )
     workspace_root = Path(workspace_root).resolve()
     staging_dir = Path(tempfile.mkdtemp(prefix="agentic_project_template_"))
     try:
@@ -882,26 +1003,7 @@ def publish_template_to_github(
             }
             remote_url = f"git@github.com:{repo_slug}.git"
 
-        subprocess.run(["git", "init", "-b", "main"], cwd=str(staging_dir), check=True, capture_output=True)
-        subprocess.run(["git", "add", "-A"], cwd=str(staging_dir), check=True, capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", commit_message],
-            cwd=str(staging_dir),
-            check=True,
-            capture_output=True,
-        )
-        subprocess.run(
-            ["git", "remote", "add", "origin", remote_url],
-            cwd=str(staging_dir),
-            check=True,
-            capture_output=True,
-        )
-        subprocess.run(
-            ["git", "push", "-u", "--force", "origin", "main"],
-            cwd=str(staging_dir),
-            check=True,
-            capture_output=True,
-        )
+        push_res = _push_export_preserving_history(staging_dir, remote_url, effective_message)
 
         manifest_path = workspace_root / "plan-pipeline.yaml"
         manifest = load_workspace_manifest(manifest_path) if manifest_path.is_file() else {}
@@ -913,6 +1015,8 @@ def publish_template_to_github(
             "is_template": gh_meta.get("is_template", is_template),
             "private": gh_meta.get("private", not is_public),
             "skills_exported": export_info["skills_exported"],
+            "pushed": push_res["pushed"],
+            "up_to_date": push_res["up_to_date"],
         }
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)

@@ -52,3 +52,5 @@ Add an optional `"supervisor"` block to `plan-pipeline.yaml` to trigger Gate A (
 ## Opt-In Template Publish Drift Check (`plan-pipeline.yaml`)
 
 Template publisher workspaces can set `"template_publish_check": true` in `plan-pipeline.yaml` (omitted / `false` by default for downstream consumers). When enabled, `status` and `archive` compare a SHA-256 digest of `plan_pipeline/` and configured `universal_skills` against `.git/plan_pipeline_template_sync.json` and print a non-blocking reminder to run `sync-template --push` when changes are unpublished.
+
+`sync-template --push [-m "<message>"]` preserves commit history on `main` when the remote repository already exists (and skips committing/pushing when there are no changes).
