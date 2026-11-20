@@ -1,0 +1,25 @@
+{
+  "version": "1.0",
+  "name": "Universal Agentic Project Template",
+  "mode": "single-project",
+  "plans_dir": "docs/plans",
+  "prefix": "",
+  "test_command": "./run_tests.sh",
+  "template_repo": "https://github.com/ericrowe/agentic-project-template.git",
+  "universal_skills": [
+    "plan-pipeline",
+    "idea-triage",
+    "security-auditor",
+    "requirements-engineering",
+    "cad-openscad",
+    "cad-python",
+    "cad-renderer",
+    "mesh-auditor",
+    "hardware-prototyper",
+    "operational-cadence",
+    "architecture-auditor",
+    "learning-loop",
+    "adversarial-debate",
+    "benchmark-alpha"
+  ]
+}
